@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
-import { makeExecute, makeSubscribe, Plugin, TypedExecutionArgs } from '@envelop/core';
-import { DocumentNode, Source, ExecutionArgs, ExecutionResult } from 'graphql';
+import { getDocumentString, makeExecute, makeSubscribe, Plugin, TypedExecutionArgs } from '@envelop/core';
+import { DocumentNode, ExecutionArgs, ExecutionResult } from 'graphql';
 import { compileQuery, isCompiledQuery, CompilerOptions, CompiledQuery } from 'graphql-jit';
 import LRU from 'lru-cache';
 
@@ -34,18 +34,22 @@ export const useGraphQlJit = (
     cache?: JITCache;
   } = {}
 ): Plugin => {
-  const documentSourceMap = new WeakMap<DocumentNode, string>();
-  const jitCache =
+  const jitCacheByDocumentString =
     typeof pluginOptions.cache !== 'undefined'
       ? pluginOptions.cache
       : new LRU<string, JITCacheEntry>({ max: DEFAULT_MAX, maxAge: DEFAULT_TTL });
 
+  const jitCacheByDocument = new WeakMap<DocumentNode, JITCacheEntry>();
+
   function getCacheEntry<T>(args: TypedExecutionArgs<T>): JITCacheEntry {
     let cacheEntry: JITCacheEntry | undefined;
-    const documentSource = documentSourceMap.get(args.document);
 
-    if (documentSource) {
-      cacheEntry = jitCache.get(documentSource);
+    cacheEntry = jitCacheByDocument.get(args.document);
+
+    const documentSource = getDocumentString(args.document);
+
+    if (!cacheEntry && documentSource) {
+      cacheEntry = jitCacheByDocumentString.get(documentSource);
     }
 
     if (!cacheEntry) {
@@ -69,23 +73,15 @@ export const useGraphQlJit = (
         cacheEntry = compilationResult;
       }
 
+      jitCacheByDocument.set(args.document, cacheEntry);
       if (documentSource) {
-        jitCache.set(documentSource, cacheEntry);
+        jitCacheByDocumentString.set(documentSource, cacheEntry);
       }
     }
     return cacheEntry;
   }
 
   return {
-    onParse({ params: { source } }) {
-      const key = source instanceof Source ? source.body : source;
-
-      return ({ result }) => {
-        if (!result || result instanceof Error) return;
-
-        documentSourceMap.set(result, key);
-      };
-    },
     async onExecute({ args, setExecuteFn }) {
       if (!pluginOptions.enableIf || (pluginOptions.enableIf && (await pluginOptions.enableIf(args)))) {
         setExecuteFn(

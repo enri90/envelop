@@ -1,11 +1,20 @@
-import { Plugin, Maybe, isAsyncIterable, ExecutionResult, ObjMap } from '@envelop/core';
-import { visitResult } from '@graphql-tools/utils';
-import { visit, TypeInfo, visitWithTypeInfo, ExecutionArgs, getOperationAST, Kind, SelectionSetNode } from 'graphql';
+import { Plugin, Maybe, isAsyncIterable, ExecutionResult, ObjMap, getDocumentString } from '@envelop/core';
+import { memoize1, visitResult } from '@graphql-tools/utils';
+import {
+  visit,
+  TypeInfo,
+  visitWithTypeInfo,
+  ExecutionArgs,
+  getOperationAST,
+  Kind,
+  SelectionSetNode,
+  print,
+  DocumentNode,
+} from 'graphql';
 import jsonStableStringify from 'fast-json-stable-stringify';
 import type { Cache, CacheEntityRecord } from './cache.js';
 import { createInMemoryCache } from './in-memory-cache.js';
 import { hashSHA256 } from './hash-sha256.js';
-import { defaultGetDocumentString, useCacheDocumentString } from './cache-document-str.js';
 
 /**
  * Function for building the response cache key based on the input parameters
@@ -145,6 +154,10 @@ export const defaultShouldCacheResult: ShouldCacheResultFunction = (params): Boo
   return true;
 };
 
+export function defaultGetDocumentString(executionArgs: ExecutionArgs): string {
+  return getDocumentString(executionArgs.document, print);
+}
+
 export type ResponseCacheExtensions =
   | {
       hit: true;
@@ -167,6 +180,37 @@ export type ResponseCacheExecutionResult = ExecutionResult<
   { responseCache?: ResponseCacheExtensions }
 >;
 
+const addTypeNameToDocument = memoize1(function addTypeNameToDocument(
+  document: DocumentNode
+): DocumentNode | undefined {
+  let documentChanged = false;
+  const newDocument = visit(document, {
+    SelectionSet(node): SelectionSetNode {
+      if (!node.selections.some(selection => selection.kind === Kind.FIELD && selection.name.value === '__typename')) {
+        documentChanged = true;
+        return {
+          ...node,
+          selections: [
+            {
+              kind: Kind.FIELD,
+              name: {
+                kind: Kind.NAME,
+                value: '__typename',
+              },
+            },
+            ...node.selections,
+          ],
+        };
+      }
+      return node;
+    },
+  });
+  if (documentChanged) {
+    return newDocument;
+  }
+  return undefined;
+});
+
 export function useResponseCache<PluginContext extends Record<string, any> = {}>({
   cache = createInMemoryCache(),
   ttl: globalTtl = Infinity,
@@ -188,51 +232,27 @@ export function useResponseCache<PluginContext extends Record<string, any> = {}>
   // never cache Introspections
   ttlPerSchemaCoordinate = { 'Query.__schema': 0, ...ttlPerSchemaCoordinate };
 
+  const documentChangedByContext = new WeakMap<PluginContext, boolean>();
   return {
-    onPluginInit({ addPlugin }) {
-      if (getDocumentString === defaultGetDocumentString) {
-        addPlugin(useCacheDocumentString());
-      }
+    onParse({ context }) {
+      return ({ result, replaceParseResult }) => {
+        if (result.kind === Kind.DOCUMENT) {
+          const newDocument = addTypeNameToDocument(result);
+          if (newDocument) {
+            documentChangedByContext.set(context, true);
+            replaceParseResult(newDocument);
+          }
+        }
+      };
     },
     async onExecute(onExecuteParams) {
-      let documentChanged = false;
-      const newDocument = visit(onExecuteParams.args.document, {
-        SelectionSet(node): SelectionSetNode {
-          if (
-            !node.selections.some(selection => selection.kind === Kind.FIELD && selection.name.value === '__typename')
-          ) {
-            documentChanged = true;
-            return {
-              ...node,
-              selections: [
-                {
-                  kind: Kind.FIELD,
-                  name: {
-                    kind: Kind.NAME,
-                    value: '__typename',
-                  },
-                },
-                ...node.selections,
-              ],
-            };
-          }
-          return node;
-        },
-      });
-      if (documentChanged) {
-        onExecuteParams.setExecuteFn(function typeNameAddedExecute() {
-          return onExecuteParams.executeFn({
-            ...onExecuteParams.args,
-            document: newDocument,
-          });
-        });
-      }
       const identifier = new Map<string, CacheEntityRecord>();
       const types = new Set<string>();
 
       let currentTtl: number | undefined;
       let skip = false;
 
+      const documentChanged = documentChangedByContext.get(onExecuteParams.args.contextValue);
       const processResult = (result: ExecutionResult): ExecutionResult =>
         visitResult(
           result,

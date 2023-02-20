@@ -1,6 +1,6 @@
 import * as GraphQLJS from 'graphql';
 import { DocumentNode, ExecutionResult, getOperationAST, GraphQLError, GraphQLSchema, print } from 'graphql';
-import { useSchema, envelop, isAsyncIterable, useEngine } from '@envelop/core';
+import { useSchema, envelop, isAsyncIterable, useEngine, getDocumentString } from '@envelop/core';
 import { GetEnvelopedFn, Plugin } from '@envelop/types';
 import { mapSchema as cloneSchema, isDocumentNode } from '@graphql-tools/utils';
 
@@ -184,12 +184,12 @@ export function createTestkit(
           method: 'POST',
           query: '',
           body: {
-            query: print(document),
+            query: getDocumentString(document, print),
             variables: variableValues,
           },
         },
         document,
-        operation: print(document),
+        operation: getDocumentString(document, print),
         variables: variableValues,
         ...initialContext,
       });

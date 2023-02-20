@@ -5,9 +5,10 @@ import {
   createTestkit,
 } from '@envelop/testing';
 import { makeExecutableSchema } from '@graphql-tools/schema';
-import { execute, subscribe } from 'graphql';
+import { execute, ExecutionArgs, subscribe } from 'graphql';
 import { useGraphQlJit, JITCache } from '../src/index.js';
 import LRU from 'lru-cache';
+import { useParserCache } from '@envelop/parser-cache';
 
 describe('useGraphQlJit', () => {
   const schema = makeExecutableSchema({
@@ -160,5 +161,30 @@ describe('useGraphQlJit', () => {
     await testInstance.execute(`query { test }`);
     expect(cache.get).toHaveBeenCalled();
     expect(cache.set).toHaveBeenCalled();
+  });
+
+  it('never hits LRU cache when parsed document is cached', async () => {
+    const cache: JITCache = new LRU();
+    jest.spyOn(cache, 'set');
+    jest.spyOn(cache, 'get');
+
+    const testInstance = createTestkit(
+      [
+        useParserCache(),
+        useGraphQlJit(
+          {},
+          {
+            cache,
+          }
+        ),
+      ],
+      schema
+    );
+
+    await testInstance.execute(`query { test }`);
+    await testInstance.execute(`query { test }`);
+    await testInstance.execute(`query { test }`);
+    expect(cache.get).toHaveBeenCalledTimes(1);
+    expect(cache.set).toHaveBeenCalledTimes(1);
   });
 });
