@@ -48,7 +48,7 @@
   },
   "devDependencies": {
     "@types/ioredis": "4.28.10",
-    "ioredis-mock": "5.9.1",
+    "ioredis-mock": "8.2.6",
     "typescript": "4.8.4"
   },
   "dependencies": {
