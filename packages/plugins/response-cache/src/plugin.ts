@@ -180,9 +180,7 @@ export type ResponseCacheExecutionResult = ExecutionResult<
   { responseCache?: ResponseCacheExtensions }
 >;
 
-const addTypeNameToDocument = memoize1(function addTypeNameToDocument(
-  document: DocumentNode
-): DocumentNode | undefined {
+const addTypeNameToDocument = memoize1(function addTypeNameToDocument(document: DocumentNode): DocumentNode | void {
   let documentChanged = false;
   const newDocument = visit(document, {
     SelectionSet(node): SelectionSetNode {
@@ -208,7 +206,6 @@ const addTypeNameToDocument = memoize1(function addTypeNameToDocument(
   if (documentChanged) {
     return newDocument;
   }
-  return undefined;
 });
 
 export function useResponseCache<PluginContext extends Record<string, any> = {}>({
@@ -231,20 +228,7 @@ export function useResponseCache<PluginContext extends Record<string, any> = {}>
 
   // never cache Introspections
   ttlPerSchemaCoordinate = { 'Query.__schema': 0, ...ttlPerSchemaCoordinate };
-
-  const documentChangedByContext = new WeakMap<PluginContext, boolean>();
   return {
-    onParse({ context }) {
-      return ({ result, replaceParseResult }) => {
-        if (result.kind === Kind.DOCUMENT) {
-          const newDocument = addTypeNameToDocument(result);
-          if (newDocument) {
-            documentChangedByContext.set(context, true);
-            replaceParseResult(newDocument);
-          }
-        }
-      };
-    },
     async onExecute(onExecuteParams) {
       const identifier = new Map<string, CacheEntityRecord>();
       const types = new Set<string>();
@@ -252,7 +236,11 @@ export function useResponseCache<PluginContext extends Record<string, any> = {}>
       let currentTtl: number | undefined;
       let skip = false;
 
-      const documentChanged = documentChangedByContext.get(onExecuteParams.args.contextValue);
+      onExecuteParams.setExecuteFn(function typeAddedExecuteFn(args) {
+        args.document = addTypeNameToDocument(onExecuteParams.args.document);
+        return onExecuteParams.executeFn(args);
+      });
+
       const processResult = (result: ExecutionResult): ExecutionResult =>
         visitResult(
           result,
@@ -276,27 +264,25 @@ export function useResponseCache<PluginContext extends Record<string, any> = {}>
                     return val;
                   },
                   get(_, fieldName: string) {
-                    if (documentChanged) {
-                      if (fieldName === '__typename') {
-                        typenameCalled++;
-                      }
-                      if (
-                        fieldName === '__leave' &&
-                        /**
-                         * The visitResult function is called for each field in the selection set.
-                         * But visitResult function looks for __typename field visitor even if it is not there in the document
-                         * So it calls __typename field visitor twice if it is also in the selection set.
-                         * That's why we need to count the number of times it is called.
-                         *
-                         * Default call of __typename https://github.com/ardatan/graphql-tools/blob/master/packages/utils/src/visitResult.ts#L277
-                         * Call for the field node https://github.com/ardatan/graphql-tools/blob/master/packages/utils/src/visitResult.ts#L272
-                         */ typenameCalled < 2
-                      ) {
-                        return (root: any) => {
-                          delete root.__typename;
-                          return root;
-                        };
-                      }
+                    if (fieldName === '__typename') {
+                      typenameCalled++;
+                    }
+                    if (
+                      fieldName === '__leave' &&
+                      /**
+                       * The visitResult function is called for each field in the selection set.
+                       * But visitResult function looks for __typename field visitor even if it is not there in the document
+                       * So it calls __typename field visitor twice if it is also in the selection set.
+                       * That's why we need to count the number of times it is called.
+                       *
+                       * Default call of __typename https://github.com/ardatan/graphql-tools/blob/master/packages/utils/src/visitResult.ts#L277
+                       * Call for the field node https://github.com/ardatan/graphql-tools/blob/master/packages/utils/src/visitResult.ts#L272
+                       */ typenameCalled < 2
+                    ) {
+                      return (root: any) => {
+                        delete root.__typename;
+                        return root;
+                      };
                     }
 
                     if (ignoredTypesMap.has(typename)) {
