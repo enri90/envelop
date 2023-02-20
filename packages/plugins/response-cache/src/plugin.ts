@@ -180,7 +180,8 @@ export type ResponseCacheExecutionResult = ExecutionResult<
   { responseCache?: ResponseCacheExtensions }
 >;
 
-const addTypeNameToDocument = memoize1(function addTypeNameToDocument(document: DocumentNode): DocumentNode | void {
+const originalDocumentMap = new WeakMap<DocumentNode, DocumentNode>();
+const addTypeNameToDocument = memoize1(function addTypeNameToDocument(document: DocumentNode): DocumentNode {
   let documentChanged = false;
   const newDocument = visit(document, {
     SelectionSet(node): SelectionSetNode {
@@ -204,8 +205,9 @@ const addTypeNameToDocument = memoize1(function addTypeNameToDocument(document: 
     },
   });
   if (documentChanged) {
-    return newDocument;
+    originalDocumentMap.set(newDocument, document);
   }
+  return newDocument;
 });
 
 export function useResponseCache<PluginContext extends Record<string, any> = {}>({
@@ -229,23 +231,25 @@ export function useResponseCache<PluginContext extends Record<string, any> = {}>
   // never cache Introspections
   ttlPerSchemaCoordinate = { 'Query.__schema': 0, ...ttlPerSchemaCoordinate };
   return {
+    onParse() {
+      return ({ result, replaceParseResult }) => {
+        if (result.kind === Kind.DOCUMENT) {
+          const newDocument = addTypeNameToDocument(result);
+          replaceParseResult(newDocument);
+        }
+      };
+    },
     async onExecute(onExecuteParams) {
       const identifier = new Map<string, CacheEntityRecord>();
       const types = new Set<string>();
 
       let currentTtl: number | undefined;
       let skip = false;
-
-      onExecuteParams.setExecuteFn(function typeAddedExecuteFn(args) {
-        args.document = addTypeNameToDocument(onExecuteParams.args.document);
-        return onExecuteParams.executeFn(args);
-      });
-
       const processResult = (result: ExecutionResult): ExecutionResult =>
         visitResult(
           result,
           {
-            document: onExecuteParams.args.document,
+            document: originalDocumentMap.get(onExecuteParams.args.document) ?? onExecuteParams.args.document,
             variables: onExecuteParams.args.variableValues as any,
             operationName: onExecuteParams.args.operationName ?? undefined,
             rootValue: onExecuteParams.args.rootValue,
@@ -312,34 +316,35 @@ export function useResponseCache<PluginContext extends Record<string, any> = {}>
           )
         );
 
-      const operationAST = getOperationAST(onExecuteParams.args.document, onExecuteParams.args.operationName);
+      if (invalidateViaMutation !== false) {
+        const operationAST = getOperationAST(onExecuteParams.args.document, onExecuteParams.args.operationName);
+        if (operationAST?.operation === 'mutation') {
+          return {
+            onExecuteDone({ result, setResult }) {
+              if (isAsyncIterable(result)) {
+                // eslint-disable-next-line no-console
+                console.warn('[useResponseCache] AsyncIterable returned from execute is currently unsupported.');
+                return;
+              }
 
-      if (invalidateViaMutation !== false && operationAST?.operation === 'mutation') {
-        return {
-          onExecuteDone({ result, setResult }) {
-            if (isAsyncIterable(result)) {
-              // eslint-disable-next-line no-console
-              console.warn('[useResponseCache] AsyncIterable returned from execute is currently unsupported.');
-              return;
-            }
+              const processedResult = processResult(result) as ResponseCacheExecutionResult;
 
-            const processedResult = processResult(result) as ResponseCacheExecutionResult;
-
-            cache.invalidate(identifier.values());
-            if (includeExtensionMetadata) {
-              setResult({
-                ...processedResult,
-                extensions: {
-                  ...processedResult.extensions,
-                  responseCache: {
-                    ...processedResult.extensions?.responseCache,
-                    invalidatedEntities: Array.from(identifier.values()),
+              cache.invalidate(identifier.values());
+              if (includeExtensionMetadata) {
+                setResult({
+                  ...processedResult,
+                  extensions: {
+                    ...processedResult.extensions,
+                    responseCache: {
+                      ...processedResult.extensions?.responseCache,
+                      invalidatedEntities: Array.from(identifier.values()),
+                    },
                   },
-                },
-              });
-            }
-          },
-        };
+                });
+              }
+            },
+          };
+        }
       }
 
       const cacheKey = await buildResponseCacheKey({
