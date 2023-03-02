@@ -51,7 +51,7 @@
     "tslib": "^2.5.0"
   },
   "devDependencies": {
-    "apollo-server-core": "3.5.0",
+    "apollo-server-core": "3.12.0",
     "graphql": "16.6.0",
     "typescript": "4.8.4"
   },
