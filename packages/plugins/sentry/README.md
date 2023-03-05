@@ -47,6 +47,9 @@ const getEnveloped = envelop({
       appendTags: args => {}, // if you wish to add custom "tags" to the Sentry transaction created per operation
       configureScope: (args, scope) => {}, // if you wish to modify the Sentry scope
       skip: executionArgs => {} // if you wish to modify the skip specific operations
+      skipError: (error) => { // if you wish to skip specific Error
+        return (error instanceof GraphQLError) as boolean;
+      },
     })
   ]
 })
